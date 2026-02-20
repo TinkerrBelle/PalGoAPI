@@ -18,18 +18,79 @@ namespace PalGoAPI.Controllers
         private readonly SignInManager<ApplicationUser> _signInManager;
         private readonly ITokenService _tokenService;
         private readonly IConfiguration _configuration;
+        private readonly IEmailService _emailService;
+
 
         public AuthController(
             UserManager<ApplicationUser> userManager,
             SignInManager<ApplicationUser> signInManager,
             ITokenService tokenService,
-            IConfiguration configuration)
+            IConfiguration configuration,
+            IEmailService emailService)
         {
             _userManager = userManager;
             _signInManager = signInManager;
             _tokenService = tokenService;
             _configuration = configuration;
+            _emailService = emailService;
         }
+
+        //[HttpPost("register")]
+        //public async Task<IActionResult> Register([FromBody] RegisterDto model)
+        //{
+        //    if (!ModelState.IsValid)
+        //        return BadRequest(ModelState);
+
+        //    var existingUser = await _userManager.FindByEmailAsync(model.Email);
+        //    if (existingUser != null)
+        //        return BadRequest(new { message = "User with this email already exists" });
+
+        //    var user = new ApplicationUser
+        //    {
+        //        UserName = model.Email,
+        //        Email = model.Email,
+        //        FirstName = model.FirstName,
+        //        LastName = model.LastName,
+        //        PhoneNumber = model.PhoneNumber,
+        //        Role = model.Role,
+        //        CreatedAt = DateTime.UtcNow,
+        //        IsActive = true
+        //    };
+
+        //    var result = await _userManager.CreateAsync(user, model.Password);
+
+        //    if (!result.Succeeded)
+        //    {
+        //        return BadRequest(new { message = "Registration failed", errors = result.Errors });
+        //    }
+
+        //    // Get device info
+        //    var deviceInfo = Request.Headers["User-Agent"].ToString();
+        //    var ipAddress = HttpContext.Connection.RemoteIpAddress?.ToString();
+
+        //    // Generate both tokens
+        //    var token = _tokenService.GenerateAccessToken(user);
+        //    var refresh = await _tokenService.GenerateRefreshToken(user.Id, deviceInfo, ipAddress);
+
+        //    var tokenExpiry = DateTime.UtcNow.AddMinutes(Convert.ToInt32(_configuration["JwtSettings:ExpiryInMinutes"]));
+        //    var refreshExpiry = DateTime.UtcNow.AddDays(Convert.ToInt32(_configuration["JwtSettings:RefreshTokenExpiryInDays"]));
+
+        //    return Ok(new
+        //    {
+        //        accessToken = token,
+        //        refreshToken = refresh,
+        //        accessTokenExpiry = tokenExpiry,
+        //        refreshTokenExpiry = refreshExpiry,
+        //        user = new
+        //        {
+        //            id = user.Id,
+        //            email = user.Email,
+        //            firstName = user.FirstName,
+        //            lastName = user.LastName,
+        //            role = user.Role.ToString()
+        //        }
+        //    });
+        //}
 
         [HttpPost("register")]
         public async Task<IActionResult> Register([FromBody] RegisterDto model)
@@ -50,42 +111,104 @@ namespace PalGoAPI.Controllers
                 PhoneNumber = model.PhoneNumber,
                 Role = model.Role,
                 CreatedAt = DateTime.UtcNow,
-                IsActive = true
+                IsActive = true,
+                IsEmailVerified = 0  // Not verified yet
             };
 
             var result = await _userManager.CreateAsync(user, model.Password);
 
             if (!result.Succeeded)
-            {
                 return BadRequest(new { message = "Registration failed", errors = result.Errors });
+
+            // Generate 4-digit code
+            var code = new Random().Next(1000, 9999).ToString();
+            user.EmailVerificationCode = code;
+            user.EmailVerificationExpiry = DateTime.UtcNow.AddMinutes(10); // Code expires in 10 mins
+            await _userManager.UpdateAsync(user);
+
+            // Try sending email but don't crash if it fails
+            try
+            {
+                await _emailService.SendEmailAsync(
+                    user.Email,
+                    "Verify your PalGo account",
+                    $@"
+                    <h2>Welcome to PalGo!</h2>
+                    <p>Your verification code is:</p>
+                    <h1 style='font-size: 48px; letter-spacing: 10px; color: #2563eb;'>{code}</h1>
+                    <p>This code expires in 10 minutes.</p>
+                    "
+                );
             }
-
-            // Get device info
-            var deviceInfo = Request.Headers["User-Agent"].ToString();
-            var ipAddress = HttpContext.Connection.RemoteIpAddress?.ToString();
-
-            // Generate both tokens
-            var token = _tokenService.GenerateAccessToken(user);
-            var refresh = await _tokenService.GenerateRefreshToken(user.Id, deviceInfo, ipAddress);
-
-            var tokenExpiry = DateTime.UtcNow.AddMinutes(Convert.ToInt32(_configuration["JwtSettings:ExpiryInMinutes"]));
-            var refreshExpiry = DateTime.UtcNow.AddDays(Convert.ToInt32(_configuration["JwtSettings:RefreshTokenExpiryInDays"]));
-
+            catch (Exception emailEx)
+            {
+                // Log it but don't fail the registration
+                Console.WriteLine($"Email sending failed: {emailEx.Message}");
+                // During development you can log the code so you can test manually
+                Console.WriteLine($"VERIFICATION CODE for {user.Email}: {code}");
+            }
             return Ok(new
             {
-                accessToken = token,
-                refreshToken = refresh,
-                accessTokenExpiry = tokenExpiry,
-                refreshTokenExpiry = refreshExpiry,
-                user = new
-                {
-                    id = user.Id,
-                    email = user.Email,
-                    firstName = user.FirstName,
-                    lastName = user.LastName,
-                    role = user.Role.ToString()
-                }
+                message = "Registration successful. Please check your email for verification code.",
+                email = user.Email  // Send back email so frontend knows where to verify
             });
+        }
+
+        [HttpPost("verify-email")]
+        public async Task<IActionResult> VerifyEmail([FromBody] VerifyEmailDto model)
+        {
+            var user = await _userManager.FindByEmailAsync(model.Email);
+
+            if (user == null)
+                return NotFound(new { message = "User not found" });
+
+            if (user.IsEmailVerified == 1)
+                return BadRequest(new { message = "Email already verified" });
+
+            if (user.EmailVerificationCode != model.Code)
+                return BadRequest(new { message = "Invalid verification code" });
+
+            if (user.EmailVerificationExpiry < DateTime.UtcNow)
+                return BadRequest(new { message = "Verification code has expired. Please request a new one." });
+
+            // Mark as verified and clear the code
+            user.IsEmailVerified = 1;
+            user.EmailVerificationCode = null;
+            user.EmailVerificationExpiry = null;
+            await _userManager.UpdateAsync(user);
+
+            return Ok(new { message = "Email verified successfully!" });
+        }
+
+        [HttpPost("resend-code")]
+        public async Task<IActionResult> ResendVerificationCode([FromBody] ResendCodeDto model)
+        {
+            var user = await _userManager.FindByEmailAsync(model.Email);
+
+            if (user == null)
+                return NotFound(new { message = "User not found" });
+
+            if (user.IsEmailVerified == 1)
+                return BadRequest(new { message = "Email already verified" });
+
+            // Generate new code
+            var code = new Random().Next(1000, 9999).ToString();
+            user.EmailVerificationCode = code;
+            user.EmailVerificationExpiry = DateTime.UtcNow.AddMinutes(10);
+            await _userManager.UpdateAsync(user);
+
+            await _emailService.SendEmailAsync(
+                user.Email,
+                "Your new PalGo verification code",
+                $@"
+        <h2>New Verification Code</h2>
+        <p>Your new verification code is:</p>
+        <h1 style='font-size: 48px; letter-spacing: 10px; color: #2563eb;'>{code}</h1>
+        <p>This code expires in 10 minutes.</p>
+        "
+            );
+
+            return Ok(new { message = "New verification code sent!" });
         }
 
         [HttpPost("login")]
@@ -226,27 +349,6 @@ namespace PalGoAPI.Controllers
             return Ok(new { message = "Logged out from all devices successfully" });
         }
 
-        //[Authorize]
-        //[HttpGet("profile")]
-        //public async Task<IActionResult> GetProfile()
-        //{
-        //    var userId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-        //    var user = await _userManager.FindByIdAsync(userId);
-
-        //    if (user == null)
-        //        return NotFound(new { message = "User not found" });
-
-        //    return Ok(new
-        //    {
-        //        id = user.Id,
-        //        email = user.Email,
-        //        firstName = user.FirstName,
-        //        lastName = user.LastName,
-        //        role = user.Role.ToString(),
-        //        phoneNumber = user.PhoneNumber,
-        //        isActive = user.IsActive
-        //    }); 
-        //}
 
         [Authorize]
         [HttpGet("profile")]

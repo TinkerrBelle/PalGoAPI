@@ -16,5 +16,10 @@ namespace PalGoAPI.Models
         public UserRole Role { get; set; }
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
         public bool IsActive { get; set; } = true;
+
+        // ADD THESE:
+        public string? EmailVerificationCode { get; set; }
+        public DateTime? EmailVerificationExpiry { get; set; }
+        public int IsEmailVerified { get; set; } = 0;  // 0 = false, 1 = true in Oracle
     }
 }

@@ -58,6 +58,7 @@ builder.Services.AddAuthentication(options =>
 
 // Register TokenService - ADD THIS
 builder.Services.AddScoped<ITokenService, TokenService>();
+builder.Services.AddScoped<IEmailService, EmailService>();
 
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();

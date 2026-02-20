@@ -1,0 +1,6 @@
+@PalGoAPI_HostAddress = http://localhost:5107
+
+GET {{PalGoAPI_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
